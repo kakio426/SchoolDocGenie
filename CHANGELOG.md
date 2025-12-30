@@ -16,6 +16,19 @@
   - Full-text and similarity search for documents
   - "Copy Reference" feature for administrative efficiency
 
+## [v0.6.0] - 2025-12-31
+### Added
+- **Intelligent Analysis Engine**: Enhanced Gemini prompt for logical reasoning and complex table parsing.
+- **Interactive Chat (Q&A)**: Added "Chat with Document" feature in the Detail View for natural language queries.
+- **Multi-Document Comparison**: Implemented side-by-side comparison of two documents to identify changes (e.g., Year-over-Year differences).
+- **Startup Optimization**: Applied lazy loading for heavy libraries (`pandas`, `pyhwpx`) to significantly speed up agent launch.
+- **Enhanced Privacy Masking**: Restored and improved name, phone, and email masking patterns.
+
+### Changed
+- **UI UX**: Renamed "Server Transfer" button to "AI Analysis Start" to better reflect the action.
+- **Terms of Service**: Updated disclaimer to clarify BYOK model and local/stateless data handling.
+- **Version**: Bumped version to `v0.6.0 Intelligent Hybrid`.
+
 ### Changed
 - Improved HWP conversion using HTML intermediary for better table support
 - Updated Gemini model to `gemini-3-flash-preview` for latest performance

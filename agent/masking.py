@@ -53,6 +53,18 @@ class MaskingService:
             
         masked = self.patterns["email"].sub(mask_email, masked)
         
+        # 4. 이름 마스킹 (선생님, 교사 등 직위와 결합된 경우)
+        def mask_name(m):
+            name = m.group(1)
+            # 홍길동 -> 홍*동, 이순신 -> 이*신
+            if len(name) >= 3:
+                return name[0] + "*" + name[2:] + m.group().replace(name, "")
+            elif len(name) == 2:
+                return name[0] + "*" + m.group().replace(name, "")
+            return m.group()
+
+        masked = self.patterns["name"].sub(mask_name, masked)
+        
         return masked
 
 if __name__ == "__main__":

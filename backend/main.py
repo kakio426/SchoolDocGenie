@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import shutil
@@ -146,6 +146,50 @@ async def analyze_text(request: TextAnalysisRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/analyze/proxy")
+async def analyze_proxy(
+    request: TextAnalysisRequest,
+    x_user_gemini_key: Optional[str] = Header(None)
+):
+    """Stateless Mode: 사용자 API Key를 사용하여 분석만 수행하고 저장하지 않음"""
+    if not x_user_gemini_key:
+        raise HTTPException(status_code=401, detail="사용자 Gemini API Key가 필요합니다 (x-user-gemini-key 헤더).")
+    
+    logger.info(f"Stateless Proxy: Analyzing {request.filename} with user key")
+    
+    try:
+        from services.gemini_service import GeminiService
+        # 사용자 키로 서비스 초기화
+        gemini = GeminiService(api_key=x_user_gemini_key)
+        
+        # 통합 분석 실행
+        full_result = gemini.analyze_document_comprehensive(request.text)
+        
+        metadata = full_result.get("metadata", {})
+        keywords = full_result.get("keywords", [])
+        
+        return {
+            "filename": request.filename,
+            "content": request.text,
+            "document_id": "stateless-no-id",
+            "analysis": {
+                "title": metadata.get("title", "제목 없음"),
+                "date": metadata.get("date", ""),
+                "doc_number": metadata.get("doc_number", ""),
+                "summary": full_result.get("summary", ""), 
+                "keywords": keywords,
+                "action_items": full_result.get("action_items", [])
+            }
+        }
+    except ValueError as ve:
+        if "사용량" in str(ve):
+            raise HTTPException(status_code=429, detail=str(ve))
+        raise HTTPException(status_code=500, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Proxy Analysis Failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/analyze")
 async def analyze_file(
     file: UploadFile = File(...),
@@ -190,3 +234,30 @@ async def search_documents(q: str):
     except Exception as e:
         logger.error(f"Search failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/analyze/chat")
+async def analyze_chat(
+    request: dict, # { "text": "...", "query": "..." }
+    x_user_gemini_key: Optional[str] = Header(None)
+):
+    """문서 기반 질의응답 (Stateless)"""
+    if not x_user_gemini_key:
+        raise HTTPException(status_code=401, detail="API Key is required")
+    
+    from services.gemini_service import GeminiService
+    gemini = GeminiService(api_key=x_user_gemini_key)
+    answer = gemini.ask_question(request.get("text", ""), request.get("query", ""))
+    return {"answer": answer}
+
+@app.post("/analyze/compare")
+async def analyze_compare(
+    request: dict, # { "text_a": "...", "text_b": "..." }
+    x_user_gemini_key: Optional[str] = Header(None)
+):
+    """두 문서 비교 분석 (Stateless)"""
+    if not x_user_gemini_key:
+        raise HTTPException(status_code=401, detail="API Key is required")
+    
+    from services.gemini_service import GeminiService
+    gemini = GeminiService(api_key=x_user_gemini_key)
+    comparison = gemini.compare_documents(request.get("text_a", ""), request.get("text_b", ""))
+    return {"comparison": comparison}

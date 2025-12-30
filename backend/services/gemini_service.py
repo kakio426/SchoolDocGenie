@@ -9,11 +9,13 @@ class GeminiService:
         load_dotenv(dotenv_path=BASE_DIR / '.env')
         
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY is not set")
         
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-3-flash-preview')
+        if self.api_key:
+            genai.configure(api_key=self.api_key)
+            self.model = genai.GenerativeModel('gemini-3-flash-preview')
+        else:
+            self.model = None
+        
         self._cache = {}
 
     def _get_hash(self, content: str) -> str:
@@ -24,6 +26,38 @@ class GeminiService:
         response = self.model.generate_content(prompt)
         return response.text
 
+    def ask_question(self, context: str, question: str) -> str:
+        """문서 내용을 바탕으로 질문에 답변"""
+        prompt = f"""
+        You are a helpful school administrative assistant. 
+        Answer the following question based ONLY on the provided document content.
+        If the answer is not in the document, say "문서에서 관련 내용을 찾을 수 없습니다."
+        
+        Document Content:
+        {context[:10000]}
+        
+        Question: {question}
+        
+        Answer (in Korean, helpful tone):
+        """
+        return self.model.generate_content(prompt).text.strip()
+
+    def compare_documents(self, text_a: str, text_b: str) -> str:
+        """두 문서의 차이점 분석 (작년 vs 올해 등)"""
+        prompt = f"""
+        Analyze and compare these two school documents. 
+        Highlight changes in budget, dates, deadlines, and major policy requirements.
+        
+        Document A (Previous/Reference):
+        {text_a[:7000]}
+        
+        Document B (Current/New):
+        {text_b[:7000]}
+        
+        Comparison Summary (in Korean, Markdown format):
+        """
+        return self.model.generate_content(prompt).text.strip()
+
     def analyze_document_comprehensive(self, content: str) -> dict:
         """메타데이터 추출과 분석을 한 번의 API 호출로 통합 (Quota 절약)"""
         import json
@@ -31,8 +65,14 @@ class GeminiService:
         from core.logger import logger
         
         system_prompt = """
-        You are an expert school administrative assistant. 
+        You are an elite school administrative assistant with high logical reasoning capabilities. 
         Analyze the document and return a STRICT JSON object.
+        
+        Guidelines:
+        1. Reasoning: Don't just copy text. If an event is on March 3rd, infer that preparations usually end by the day before.
+        2. Tables: Carefully parse merged cells and grids. Identify budget limits and person-in-charge accurately.
+        3. Summary: Provide a 3-5 line executive summary in Korean focusing on 'What is this?' and 'Why is it important?'.
+        4. Action Items: List specific tasks with deadlines or requirements.
         
         Output format:
         {
@@ -41,7 +81,9 @@ class GeminiService:
                 "date": "YYYY.MM.DD",
                 "doc_number": "Number or empty"
             },
-            "keywords": ["key1", "key2"]
+            "summary": "Reasoned executive summary in Korean",
+            "keywords": ["key1", "key2"],
+            "action_items": ["Specific Task (Deadline)", "Requirement"]
         }
         """
         
@@ -62,7 +104,9 @@ class GeminiService:
             logger.error(f"Comprehensive Analysis Failed: {e}")
             return {
                 "metadata": {"title": "제목 없음", "date": "", "doc_number": ""},
-                "keywords": []
+                "summary": "AI 분석 중 오류가 발생했습니다.",
+                "keywords": [],
+                "action_items": []
             }
 
     def generate_embedding(self, text: str) -> list:

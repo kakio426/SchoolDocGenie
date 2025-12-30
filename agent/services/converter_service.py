@@ -1,25 +1,9 @@
 import os
-import pandas as pd
-from core.logger import logger
-import tempfile
 import re
-import zipfile
-from xml.etree import ElementTree as ET
+import tempfile
+from core.logger import logger
 
-# HTML을 마크다운으로 바꿔주는 라이브러리
-try:
-    from markdownify import markdownify as md
-    MARKDOWNIFY_AVAILABLE = True
-except ImportError:
-    MARKDOWNIFY_AVAILABLE = False
-
-# Windows 전용 라이브러리 체크
-try:
-    from pyhwpx import Hwp
-    HWP_AVAILABLE = True
-except ImportError:
-    HWP_AVAILABLE = False
-    logger.warning("pyhwpx is not available. Please install HWP on Windows.")
+# Heavy libraries will be imported lazily within methods to speed up initial startup.
 
 
 class LocalConverterService:
@@ -28,14 +12,20 @@ class LocalConverterService:
         return self.convert_document(file_path)
 
     def convert_hwp(self, file_path: str) -> str:
+        import os
+        import tempfile
+        import re
+        try:
+            from markdownify import markdownify as md
+        except ImportError:
+            return "❌ [오류] markdownify 라이브러리가 필요합니다."
+        try:
+            from pyhwpx import Hwp
+        except ImportError:
+            return "❌ [오류] Windows 환경 및 한글(HWP) 설치가 필요합니다."
+
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
-        if not HWP_AVAILABLE:
-            return "❌ [오류] Windows 환경 및 한글(HWP) 설치가 필요합니다."
-        
-        if not MARKDOWNIFY_AVAILABLE:
-            return "❌ [오류] markdownify 라이브러리가 필요합니다."
 
         hwp = None
         temp_html_path = None
@@ -77,6 +67,12 @@ class LocalConverterService:
                 except: pass
 
     def convert_excel(self, file_path: str) -> str:
+        import os
+        try:
+            import pandas as pd
+        except ImportError:
+            return "❌ [오류] pandas 라이브러리가 필요합니다."
+
         if not os.path.exists(file_path):
              raise FileNotFoundError(f"File not found: {file_path}")
         
@@ -95,6 +91,8 @@ class LocalConverterService:
             return f"Excel Error: {str(e)}"
 
     def convert_hwpx(self, file_path: str) -> str:
+        import zipfile
+        from xml.etree import ElementTree as ET
         try:
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 text_parts = []
@@ -110,6 +108,8 @@ class LocalConverterService:
             return f"HWPX Error: {str(e)}"
 
     def convert_odt(self, file_path: str) -> str:
+        import zipfile
+        from xml.etree import ElementTree as ET
         try:
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 if 'content.xml' not in zip_ref.namelist(): return "content.xml not found"
