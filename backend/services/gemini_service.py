@@ -3,13 +3,16 @@ import google.generativeai as genai
 
 class GeminiService:
     def __init__(self, api_key: str = None):
-        import hashlib
+        from dotenv import load_dotenv
+        from pathlib import Path
+        BASE_DIR = Path(__file__).resolve().parent.parent
+        load_dotenv(dotenv_path=BASE_DIR / '.env')
+        
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not set")
         
         genai.configure(api_key=self.api_key)
-        # Using Gemini 3.0 Flash Preview
         self.model = genai.GenerativeModel('gemini-3-flash-preview')
         self._cache = {}
 
@@ -21,52 +24,74 @@ class GeminiService:
         response = self.model.generate_content(prompt)
         return response.text
 
-    def analyze_document(self, content: str) -> dict:
+    def analyze_document_comprehensive(self, content: str) -> dict:
+        """메타데이터 추출과 분석을 한 번의 API 호출로 통합 (Quota 절약)"""
         import json
+        import re
+        from core.logger import logger
         
-        content_hash = self._get_hash(content)
-        if content_hash in self._cache:
-            return self._cache[content_hash]
-
         system_prompt = """
-        You are an expert administrative assistant for Korean schools.
-        Analyze the following document and provide a summary in VALID JSON format.
-        Do not include markdown code blocks (```json). Just raw JSON.
+        You are an expert school administrative assistant. 
+        Analyze the document and return a STRICT JSON object.
         
-        Output Schema:
+        Output format:
         {
-            "summary": "Concise summary of the document",
-            "keywords": ["List", "of", "keywords"],
-            "action_items": ["Action 1", "Action 2"]
+            "metadata": {
+                "title": "Document Title",
+                "date": "YYYY.MM.DD",
+                "doc_number": "Number or empty"
+            },
+            "keywords": ["key1", "key2"]
         }
         """
         
-        full_prompt = f"{system_prompt}\n\nDocument Content:\n{content}"
+        full_prompt = f"{system_prompt}\n\nDocument Content:\n{content[:5000]}"
         
-        response = self.model.generate_content(full_prompt)
-        text_response = response.text.strip()
-        
-        # Clean up if model adds code blocks
-        if text_response.startswith("```json"):
-            text_response = text_response[7:]
-        if text_response.endswith("```"):
-            text_response = text_response[:-3]
-            
         try:
-            result = json.loads(text_response)
-            self._cache[content_hash] = result
-            return result
-        except json.JSONDecodeError:
-            raise ValueError(f"Failed to parse JSON response: {text_response}")
+            response = self.model.generate_content(full_prompt)
+            text_response = response.text.strip()
+            
+            # JSON만 추출
+            json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            return json.loads(text_response)
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                raise ValueError("AI 사용량이 초과되었습니다. 1분 후 다시 시도해주세요.")
+            logger.error(f"Comprehensive Analysis Failed: {e}")
+            return {
+                "metadata": {"title": "제목 없음", "date": "", "doc_number": ""},
+                "keywords": []
+            }
 
     def generate_embedding(self, text: str) -> list:
-        # Using Google's dedicated embedding model
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=text,
-            task_type="retrieval_document"
-        )
-        return result['embedding']
+        try:
+            from core.logger import logger
+            # Ensure text is not empty
+            if not text or not text.strip():
+                return [0.0] * 768
+
+            logger.info(f"Requesting embedding for text (len: {len(text)})...")
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text,
+                task_type="retrieval_document"
+            )
+            
+            if result is None:
+                logger.error("genai.embed_content returned None. Check API Key or Quota.")
+                return [0.0] * 768
+                
+            if 'embedding' in result:
+                return result['embedding']
+            
+            logger.error(f"Embedding key missing in result: {result}")
+            return [0.0] * 768
+        except Exception as e:
+            from core.logger import logger
+            logger.error(f"CRITICAL: Gemini Embedding Library Error: {type(e).__name__}: {e}")
+            return [0.0] * 768
 
 
     def extract_metadata(self, content: str) -> dict:

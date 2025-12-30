@@ -6,13 +6,19 @@ from services.gemini_service import GeminiService
 
 class SupabaseService:
     def __init__(self, url: str = None, key: str = None):
-        self.url = url or os.getenv("SUPABASE_URL")
-        self.key = key or os.getenv("SUPABASE_ANON_KEY")
+        from dotenv import load_dotenv
+        from pathlib import Path
+        BASE_DIR = Path(__file__).resolve().parent.parent
+        load_dotenv(dotenv_path=BASE_DIR / '.env')
+        
+        self.url = url or os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+        self.key = key or os.getenv("SUPABASE_ANON_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
         
         if not self.url or not self.key:
-            logger.warning("Supabase credentials missing. RAG features will be disabled.")
+            logger.warning(f"Supabase credentials missing! URL: {bool(self.url)}, Key: {bool(self.key)}")
             self.client = None
         else:
+            logger.info(f"Connecting to Supabase at {self.url[:15]}...")
             self.client = create_client(self.url, self.key)
 
 
@@ -36,11 +42,15 @@ class SupabaseService:
         }
         
         try:
+            logger.info(f"Attempting to insert into Supabase: {metadata.get('filename')}")
             response = self.client.table("documents").insert(data).execute()
-            logger.info(f"Document stored in Supabase: {metadata.get('filename')}")
             
             if response.data and len(response.data) > 0:
-                return response.data[0].get('id')
+                doc_id = response.data[0].get('id')
+                logger.info(f"Document stored successfully. ID: {doc_id}")
+                return doc_id
+            
+            logger.warning(f"Supabase returned empty data. Response: {response}")
             return None
         except Exception as e:
             logger.error(f"Failed to store document in Supabase: {str(e)}")
