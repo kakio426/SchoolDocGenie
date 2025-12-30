@@ -9,8 +9,8 @@ class GeminiService:
             raise ValueError("GEMINI_API_KEY is not set")
         
         genai.configure(api_key=self.api_key)
-        # Using Gemini 3.0 Flash (December 2025 latest model)
-        self.model = genai.GenerativeModel('gemini-3.0-flash')
+        # Using Gemini 3.0 Flash Preview
+        self.model = genai.GenerativeModel('gemini-3-flash-preview')
         self._cache = {}
 
     def _get_hash(self, content: str) -> str:
@@ -69,3 +69,49 @@ class GeminiService:
         return result['embedding']
 
 
+    def extract_metadata(self, content: str) -> dict:
+        import json
+        import re
+        from core.logger import logger
+        
+        prompt = f"""
+        Extract the following metadata from the document:
+        1. Title of the document
+        2. Date (YYYY.MM.DD format)
+        3. Document Number (if available)
+
+        Return strictly in JSON format:
+        {{
+            "title": "Document Title",
+            "date": "YYYY.MM.DD",
+            "doc_number": "Document Number or empty string"
+        }}
+
+        Document Content (first 1000 chars):
+        {content[:1000]}
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            text_response = response.text.strip()
+            
+            # Clean up if model adds code blocks
+            if text_response.startswith("```json"):
+                text_response = text_response[7:]
+            if text_response.endswith("```"):
+                text_response = text_response[:-3]
+            
+            # Find JSON object
+            json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            
+            # Fallback
+            try:
+                return json.loads(text_response)
+            except:
+                return {"title": "제목 없음", "date": "", "doc_number": ""}
+                
+        except Exception as e:
+            logger.error(f"Metadata extraction failed: {e}")
+            return {"title": "제목 없음", "date": "", "doc_number": ""}

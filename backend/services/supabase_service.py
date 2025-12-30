@@ -1,7 +1,8 @@
 import os
 from supabase import create_client, Client
-from backend.core.logger import logger
-from backend.services.gemini_service import GeminiService
+from core.logger import logger
+from services.gemini_service import GeminiService
+
 
 class SupabaseService:
     def __init__(self, url: str = None, key: str = None):
@@ -35,8 +36,12 @@ class SupabaseService:
         }
         
         try:
-            self.client.table("documents").insert(data).execute()
+            response = self.client.table("documents").insert(data).execute()
             logger.info(f"Document stored in Supabase: {metadata.get('filename')}")
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0].get('id')
+            return None
         except Exception as e:
             logger.error(f"Failed to store document in Supabase: {str(e)}")
             raise

@@ -1,9 +1,27 @@
-# Changelog
+## [0.2.0] - 2025-12-30
 
-All notable changes to this project will be documented in this file.
+### Added
+- **Phase 6: Enhanced Client-side Masking**
+  - Robust masking for text files on the client side
+- **Phase 7: AI Analysis Backend Integration**
+  - Metadata extraction using Gemini (Title, Date, Doc Number)
+  - Unified `/analyze` endpoint with automatic conversion
+- **Phase 8: AI Analysis Result UI**
+  - Stunning UI for displaying AI analysis results
+  - Keywords, Summary, and Action items visualization
+- **Phase 9: Supabase Document Storage**
+  - Automatic archiving of analyzed documents to Supabase
+  - Vector embedding storage for RAG support
+- **Phase 10: Search and Reference Copy**
+  - Full-text and similarity search for documents
+  - "Copy Reference" feature for administrative efficiency
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Changed
+- Improved HWP conversion using HTML intermediary for better table support
+- Updated Gemini model to `gemini-3-flash-preview` for latest performance
+- Enhanced backend logging and error handling
+
+---
 
 ## [0.1.0] - 2025-12-30
 
