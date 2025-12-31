@@ -37,25 +37,42 @@ class ConfigManager:
         )
         return base64.urlsafe_b64encode(kdf.derive(machine_seed))
 
-    def set_api_key(self, api_key: str):
-        """API Key를 암호화하여 저장"""
-        encrypted_data = self._fernet.encrypt(api_key.encode())
+    def _save_settings(self, settings: dict):
+        """설정 딕셔너리를 암호화하여 저장"""
+        data = json.dumps(settings).encode()
+        encrypted_data = self._fernet.encrypt(data)
         with open(self.config_path, "wb") as f:
             f.write(encrypted_data)
 
-    def get_api_key(self) -> str:
-        """암호화된 API Key를 복호화하여 반환"""
+    def _load_settings(self) -> dict:
+        """암호화된 설정을 복호화하여 딕셔너리로 반환"""
         if not self.config_path.exists():
-            return None
-        
+            return {}
         try:
             with open(self.config_path, "rb") as f:
                 encrypted_data = f.read()
             decrypted_data = self._fernet.decrypt(encrypted_data)
-            return decrypted_data.decode()
+            return json.loads(decrypted_data.decode())
         except Exception:
-            # 복호화 실패 시 (키가 바뀌었거나 파일 손상)
-            return None
+            return {}
+
+    def set_api_key(self, api_key: str):
+        settings = self._load_settings()
+        settings['gemini_api_key'] = api_key
+        self._save_settings(settings)
+
+    def get_api_key(self) -> str:
+        return self._load_settings().get('gemini_api_key')
+
+    def set_config(self, key: str, value):
+        """임의의 설정값 저장"""
+        settings = self._load_settings()
+        settings[key] = value
+        self._save_settings(settings)
+
+    def get_config(self, key: str, default=None):
+        """임의의 설정값 가져오기"""
+        return self._load_settings().get(key, default)
 
     def has_api_key(self) -> bool:
         return self.get_api_key() is not None

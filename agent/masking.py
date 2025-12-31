@@ -30,37 +30,31 @@ class MaskingService:
 
         masked = text
         
-        # 1. 주민번호 마스킹
-        masked = self.patterns["resident_number"].sub(lambda m: m.group()[:7] + "*******", masked)
+        # 1. 주민번호 마스킹 (█ 사용)
+        masked = self.patterns["resident_number"].sub(lambda m: m.group()[:7] + "███████", masked)
         
         # 2. 전화번호 마스킹
         def mask_phone(m):
             phone = m.group()
-            # 숫자만 추출
             nums = re.findall(r'\d', phone)
             if len(nums) >= 10:
-                # 010-1234-5678 -> 010-****-5678
-                return phone.replace("".join(nums[3:7]), "****")
+                # 010-1234-5678 -> 010-████-5678
+                return phone.replace("".join(nums[3:7]), "████")
             return phone
             
         masked = self.patterns["phone"].sub(mask_phone, masked)
         
-        # 3. 이메일 마스킹
-        def mask_email(m):
-            email = m.group()
-            user, domain = email.split('@')
-            return f"{user[0]}{'*' * (len(user)-1)}@{domain}"
-            
-        masked = self.patterns["email"].sub(mask_email, masked)
+        # 3. 이메일 마스킹 -> 실무용으로 마스킹 제외 (사용자 요청)
+        # masked = self.patterns["email"].sub(mask_email, masked)
         
         # 4. 이름 마스킹 (선생님, 교사 등 직위와 결합된 경우)
         def mask_name(m):
             name = m.group(1)
-            # 홍길동 -> 홍*동, 이순신 -> 이*신
+            # 홍길동 -> 홍█동, 이순신 -> 이█신
             if len(name) >= 3:
-                return name[0] + "*" + name[2:] + m.group().replace(name, "")
+                return name[0] + "█" + name[2:] + m.group().replace(name, "")
             elif len(name) == 2:
-                return name[0] + "*" + m.group().replace(name, "")
+                return name[0] + "█" + m.group().replace(name, "")
             return m.group()
 
         masked = self.patterns["name"].sub(mask_name, masked)

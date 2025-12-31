@@ -11,7 +11,7 @@ env_path = BASE_DIR / '.env'
 load_dotenv(dotenv_path=env_path)
 
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 
 class TextAnalysisRequest(BaseModel):
     text: str
@@ -22,6 +22,17 @@ import uuid
 from services.converter_service import ConverterService
 
 app = FastAPI(title="School-Doc Genie API")
+
+def get_ai_service(provider: str, gemini_key: str = None, ollama_url: str = None, ollama_model: str = None):
+    if provider == "ollama":
+        from services.ollama_service import OllamaService
+        return OllamaService(
+            base_url=ollama_url or "http://localhost:11434",
+            model=ollama_model or "llama3"
+        )
+    else:
+        from services.gemini_service import GeminiService
+        return GeminiService(api_key=gemini_key)
 
 
 from core.logger import logger
@@ -149,21 +160,22 @@ async def analyze_text(request: TextAnalysisRequest):
 @app.post("/analyze/proxy")
 async def analyze_proxy(
     request: TextAnalysisRequest,
-    x_user_gemini_key: Optional[str] = Header(None)
+    x_ai_provider: Optional[str] = Header("gemini"),
+    x_user_gemini_key: Optional[str] = Header(None),
+    x_ollama_url: Optional[str] = Header(None),
+    x_ollama_model: Optional[str] = Header(None)
 ):
-    """Stateless Mode: 사용자 API Key를 사용하여 분석만 수행하고 저장하지 않음"""
-    if not x_user_gemini_key:
-        raise HTTPException(status_code=401, detail="사용자 Gemini API Key가 필요합니다 (x-user-gemini-key 헤더).")
+    """Stateless Mode: 사용자 선택 API/Local 모델을 사용하여 분석만 수행하고 저장하지 않음"""
+    if x_ai_provider == "gemini" and not x_user_gemini_key:
+        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
     
-    logger.info(f"Stateless Proxy: Analyzing {request.filename} with user key")
+    logger.info(f"Stateless Proxy: Analyzing {request.filename} via {x_ai_provider}")
     
     try:
-        from services.gemini_service import GeminiService
-        # 사용자 키로 서비스 초기화
-        gemini = GeminiService(api_key=x_user_gemini_key)
+        ai_service = get_ai_service(x_ai_provider, x_user_gemini_key, x_ollama_url, x_ollama_model)
         
         # 통합 분석 실행
-        full_result = gemini.analyze_document_comprehensive(request.text)
+        full_result = ai_service.analyze_document_comprehensive(request.text)
         
         metadata = full_result.get("metadata", {})
         keywords = full_result.get("keywords", [])
@@ -234,30 +246,36 @@ async def search_documents(q: str):
     except Exception as e:
         logger.error(f"Search failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/analyze/chat")
 async def analyze_chat(
     request: dict, # { "text": "...", "query": "..." }
-    x_user_gemini_key: Optional[str] = Header(None)
+    x_ai_provider: Optional[str] = Header("gemini"),
+    x_user_gemini_key: Optional[str] = Header(None),
+    x_ollama_url: Optional[str] = Header(None),
+    x_ollama_model: Optional[str] = Header(None)
 ):
     """문서 기반 질의응답 (Stateless)"""
-    if not x_user_gemini_key:
-        raise HTTPException(status_code=401, detail="API Key is required")
-    
-    from services.gemini_service import GeminiService
-    gemini = GeminiService(api_key=x_user_gemini_key)
-    answer = gemini.ask_question(request.get("text", ""), request.get("query", ""))
+    ai_service = get_ai_service(x_ai_provider, x_user_gemini_key, x_ollama_url, x_ollama_model)
+    answer = ai_service.ask_question(request.get("text", ""), request.get("query", ""))
     return {"answer": answer}
 
 @app.post("/analyze/compare")
 async def analyze_compare(
     request: dict, # { "text_a": "...", "text_b": "..." }
-    x_user_gemini_key: Optional[str] = Header(None)
+    x_ai_provider: Optional[str] = Header("gemini"),
+    x_user_gemini_key: Optional[str] = Header(None),
+    x_ollama_url: Optional[str] = Header(None),
+    x_ollama_model: Optional[str] = Header(None)
 ):
     """두 문서 비교 분석 (Stateless)"""
-    if not x_user_gemini_key:
-        raise HTTPException(status_code=401, detail="API Key is required")
-    
-    from services.gemini_service import GeminiService
-    gemini = GeminiService(api_key=x_user_gemini_key)
-    comparison = gemini.compare_documents(request.get("text_a", ""), request.get("text_b", ""))
+    ai_service = get_ai_service(x_ai_provider, x_user_gemini_key, x_ollama_url, x_ollama_model)
+    comparison = ai_service.compare_documents(request.get("text_a", ""), request.get("text_b", ""))
     return {"comparison": comparison}
+
+if __name__ == "__main__":
+    import uvicorn
+    print("\n" + "="*50)
+    print(">>> School-Doc Genie Backend v1.2 (Timeout 500s) 시작")
+    print("="*50 + "\n")
+    uvicorn.run(app, host="127.0.0.1", port=8001)

@@ -1,483 +1,813 @@
-
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, filedialog, ttk
+from tkinter import messagebox, filedialog
 import os
+import sys
+import threading
+from PIL import Image, ImageDraw
+import pystray
+from pystray import MenuItem as item
+from core.logger import logger # logger 임포트 추가
+
+# Appearance Settings
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
 
 class AgentGUI:
-    def __init__(self):
-        print(">>> GUI 초기화 시작...")
-        self.root = tk.Tk()
-        self.root.title("School-Doc Agent")
-        self.root.geometry("600x500")
-        self.root.withdraw() # 처음엔 크기만 잡고 숨김
+    def __init__(self, config_manager=None):
+        print(">>> Modern GUI 초기화 시작...")
+        self.config = config_manager
+        self.root = ctk.CTk()
+        self.root.withdraw() # 일단 숨겨서 초기 깜빡임 방지
+        self.root.title("School-Doc Genie Agent v1.0")
+        self.root.geometry("1000x700")
+        self.root.protocol('WM_DELETE_WINDOW', self._on_closing)
+
+        # State
+        self.is_monitoring = False
+        self.batch_files = []
         
-        # 스타일 설정
-        self.style = ttk.Style()
-        self.style.configure('TButton', font=('Malgun Gothic', 10))
-        self.style.configure('TLabel', font=('Malgun Gothic', 10))
+        # Tray Icon Setup (Python 3.13 호환성 문제로 임시 비활성화)
+        self.tray_icon = None
 
-    def show_disclaimer(self) -> bool:
-        """법적 고지 사항을 표시"""
-        self.root.deiconify() # 창 보이기
-        self.root.attributes('-topmost', True) # 최상단
-        self._center_window(self.root)
+        # UI Components
+        self._build_sidebar()
+        self._build_main_view()
+        self._build_history_view()
+        self._build_settings_view()
         
-        # 제목
-        tk.Label(self.root, text="School-Doc Genie 이용 약관", font=('Malgun Gothic', 14, 'bold')).pack(pady=10)
+        # Default view
+        self.show_view("main")
 
-        # 약관 내용
-        txt = scrolledtext.ScrolledText(self.root, width=70, height=18, font=('Malgun Gothic', 9))
-        txt.pack(padx=10, pady=5)
-        
-        disclaimer_text = """
-[School-Doc Genie Intelligent Hybrid 에이전트 이용 약관]
+        # 모든 컴포넌트 배치 완료 후 부드럽게 표시
+        self.root.after(10, self.root.deiconify)
+        self.root.after(20, self.root.focus_force)
 
-1. [운영 모델: BYOK (Bring Your Own Key)]
-   - 본 프로그램은 사용자가 직접 발급한 Google Gemini API Key를 사용합니다.
-   - AI 분석 및 채팅 사용에 따른 API 할당량 소모는 사용자의 책임입니다.
-
-2. [데이터 처리 및 보안]
-   - [로컬 처리]: 문서 변환(HWP 등)과 개인정보 마스킹은 사용자의 PC 내에서만 수행됩니다.
-   - [스테이트리스 전송]: 비식별화된 텍스트는 AI 분석을 위해 전송되나, 서버에 저장되지 않고 즉시 휘발됩니다.
-   - [로컬 저장]: 모든 분석 기록은 사용자의 PC 내에만 암호화 및 로컬 저장됩니다.
-
-3. [AI 지능형 기능 안내]
-   - 본 에이전트는 AI 요약, 액션 아이템 추출, 문서 채팅(Q&A), 문서 비교 기능을 제공합니다.
-   - AI는 기술적 한계로 인해 사실과 다른 답변을 낼 수 있으므로, 업무 활용 시 반드시 원본과 대조하십시오.
-
-4. [사용자 책임 고지]
-   - 사용자는 전송 전 '미리보기'를 통해 비식별화 상태를 직접 최전선에서 검토해야 합니다.
-   - 검토 소홀로 인한 사고 및 프로그램 활용 결과에 대한 모든 책임은 사용자 본인에게 있습니다.
-
-위 내용을 모두 숙지하였으며, 지능형 에이전트 서비스 이용에 동의합니다.
-        """
-        txt.insert(tk.END, disclaimer_text)
-        txt.config(state='disabled')
-
-        result = {'agreed': False}
-        
-        def on_agree():
-            result['agreed'] = True
-            self.root.quit() # 메인루프 탈출용
+    def _setup_dnd(self):
+        try:
+            import windnd
+            def on_drop(filenames):
+                try:
+                    # filenames는 byte 문자열의 리스트로 올 수 있으므로 디코딩 필요
+                    files = [f.decode('cp949') if isinstance(f, bytes) else f for f in filenames]
+                    
+                    # UI 업데이트는 반드시 메인 스레드에서 thread-safe하게 실행
+                    self.root.after(0, lambda: self._handle_drop_ui(files))
+                except Exception as e:
+                    logger.error(f"Drop handling error: {e}")
             
-        def on_cancel():
-            self.root.destroy()
-            import sys
-            sys.exit(0)
+            # windnd 라이브러리는 버전에 따라 함수명이 다를 수 있음
+            hook_success = False
+            for func_name in ['hook_dropfiles', 'hook_dropfile', 'hook']:
+                if hasattr(windnd, func_name):
+                    try:
+                        getattr(windnd, func_name)(self.root, on_drop)
+                        logger.info(f"DnD hooked via windnd.{func_name}")
+                        hook_success = True
+                        break
+                    except Exception as e:
+                        logger.error(f"windnd.{func_name} failed: {e}")
+            
+            if not hook_success:
+                logger.error("windnd 모듈에서 작동하는 hook 함수를 찾을 수 없습니다.")
+        except ImportError:
+            print(">>> windnd 라이브러리가 없어 드래그 앤 드롭을 지원하지 않습니다.")
+        except Exception as e:
+            print(f">>> DnD 설정 중 오류: {e}")
 
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(pady=15)
-        
-        tk.Button(btn_frame, text="동의하지 않음 (종료)", command=on_cancel, width=20).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="동의합니다 (시작)", command=on_agree, width=20, bg='#ddffdd', font=('Malgun Gothic', 10, 'bold')).pack(side=tk.LEFT, padx=10)
+    def _setup_tray(self):
+        try:
+            def create_image():
+                # 간단한 아이콘 생성
+                width, height = 64, 64
+                image = Image.new('RGB', (width, height), (30, 136, 229))
+                dc = ImageDraw.Draw(image)
+                dc.text((20, 15), "G", fill="white")
+                return image
 
+            def run_tray_icon():
+                # Python 3.13에서는 스레드 내부에서의 GIL 관리가 더욱 중요함
+                try:
+                    self.tray_icon.run()
+                except Exception as e:
+                    logger.error(f"Tray icon thread error: {e}")
+
+            menu = (item('열기', self._show_window), item('종료', self._exit_app))
+            self.tray_icon = pystray.Icon("school_doc_genie", create_image(), "School-Doc Genie", menu)
+            
+            # 별도 데몬 스레드에서 실행
+            tray_thread = threading.Thread(target=run_tray_icon, daemon=True)
+            tray_thread.start()
+            logger.info("Tray icon started in background thread.")
+        except Exception as e:
+            logger.error(f"Failed to setup tray: {e}")
+
+    def _show_window(self):
+        self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
-        print(">>> [확인] 화면에 '이용 약관' 창이 떴습니다!")
+
+    def _handle_drop_ui(self, files):
+        """드롭된 파일들을 UI 목록에 추가 (Thread-safe)"""
+        self.batch_files.extend(files)
+        self._update_batch_list()
+        self.show_view("main")
+
+    def _on_closing(self):
+        # Tray Icon 비활성화로 인해 창 닫기 = 프로그램 종료
+        self._exit_app()
+
+    def _exit_app(self):
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.root.destroy()
+        sys.exit(0)
+
+    def _build_sidebar(self):
+        self.sidebar = ctk.CTkFrame(self.root, width=200, corner_radius=0)
+        self.sidebar.pack(side="left", fill="y")
         
-        self.root.mainloop() # 동의할 때까지 대기
+        ctk.CTkLabel(self.sidebar, text="School-Doc", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
         
-        # 동의 후에는 다음 창을 위해 일단 다시 숨김
-        if result['agreed']:
-            self.root.attributes('-topmost', False) # 상단 고정 해제
-            self._clear_root()
-            self.root.withdraw()
-        return result['agreed']
-
-    def show_preview(self, filename: str, content: str) -> str:
-        """프리뷰 창 표시"""
-        self.root.deiconify()
-        self.root.geometry("800x700")
-        self._center_window(self.root)
-        self.root.attributes('-topmost', True)
-
-        header_frame = tk.Frame(self.root, bg='#f0f8ff', pady=10)
-        header_frame.pack(fill=tk.X)
-        tk.Label(header_frame, text="🔍 전송 전 최종 검토", font=('Malgun Gothic', 12, 'bold'), bg='#f0f8ff').pack()
-
-        editor = scrolledtext.ScrolledText(self.root, font=('Malgun Gothic', 11))
-        editor.pack(expand=True, fill=tk.BOTH, padx=15, pady=10)
-        editor.insert(tk.END, content)
-
-        btn_frame = tk.Frame(self.root, pady=15)
-        btn_frame.pack(fill=tk.X)
-
-        result = {'content': None}
-
-        def on_submit():
-            result['content'] = editor.get("1.0", tk.END).strip()
-            self.root.quit()
-
-        def on_cancel():
-            self.root.quit()
-
-        tk.Button(btn_frame, text="취소", command=on_cancel, width=15).pack(side=tk.LEFT, padx=20)
-        tk.Button(btn_frame, text="✅ AI 분석 시작", command=on_submit, width=25, bg='#007bff', fg='white').pack(side=tk.RIGHT, padx=20)
-
-        self.root.mainloop()
-        self.root.withdraw()
-        self._clear_root()
-        return result['content']
-
-    def show_settings_popup(self, current_key: str = "") -> str:
-        """API Key 설정 팝업"""
-        self.root.deiconify()
-        self.root.geometry("500x350")
-        self._center_window(self.root)
-        self.root.attributes('-topmost', True)
+        self.btn_main = ctk.CTkButton(self.sidebar, text="📂 문서 분석", command=lambda: self.show_view("main"), corner_radius=10)
+        self.btn_main.pack(pady=10, padx=20)
         
-        tk.Label(self.root, text="⚙️ 에이전트 설정", font=('Malgun Gothic', 14, 'bold')).pack(pady=20)
+        self.btn_history = ctk.CTkButton(self.sidebar, text="📜 분석 기록", command=lambda: self.show_view("history"), corner_radius=10)
+        self.btn_history.pack(pady=10, padx=20)
+
+        # 비교 대상 저장용
+        self.selected_comparison = []
         
-        tk.Label(self.root, text="Google Gemini API Key를 입력해주세요:", font=('Malgun Gothic', 10)).pack(pady=5)
+        self.btn_settings = ctk.CTkButton(self.sidebar, text="⚙️ 환경 설정", command=lambda: self.show_view("settings"), corner_radius=10)
+        self.btn_settings.pack(pady=10, padx=20)
         
-        key_entry = tk.Entry(self.root, width=50, font=('Courier New', 10), show='*')
-        key_entry.pack(pady=10, padx=20)
-        if current_key:
-            key_entry.insert(0, current_key)
+        ctk.CTkLabel(self.sidebar, text="v1.0 Premium", font=ctk.CTkFont(size=10)).pack(side="bottom", pady=20)
+
+    def _build_main_view(self):
+        self.view_main = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
+        
+        # Header & Engine Selector
+        header_frame = ctk.CTkFrame(self.view_main, fg_color="transparent")
+        header_frame.pack(fill="x", padx=30, pady=(30, 0))
+        
+        ctk.CTkLabel(header_frame, text="실시간 문서 분석", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        
+        # UI 초기값 설정 (단순 로드)
+        # self._sync_engine_ui() - 삭제
+
+        # Batch Area
+        self.batch_frame = ctk.CTkFrame(self.view_main, corner_radius=15)
+        self.batch_frame.pack(fill="both", expand=True, padx=30, pady=20)
+        
+        self.batch_list_container = ctk.CTkScrollableFrame(self.batch_frame, height=200)
+        self.batch_list_container.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # 안내 문구 (파일이 없을 때 표시)
+        self.empty_label = ctk.CTkLabel(self.batch_list_container, 
+                                        text="분석할 파일을 드래그하거나 [파일 추가] 버튼을 눌러주세요.\n현재 일괄 처리 및 폴더 감시 모드를 지원합니다.",
+                                        text_color="gray")
+        self.empty_label.pack(pady=50)
+
+        # Action Buttons
+        btn_box = ctk.CTkFrame(self.view_main, fg_color="transparent")
+        btn_box.pack(fill="x", padx=30, pady=(0, 30))
+        
+        ctk.CTkButton(btn_box, text="➕ 파일 추가", command=self._add_files_to_batch, width=150, fg_color="#2ecc71", hover_color="#27ae60").pack(side="left", padx=10)
+        ctk.CTkButton(btn_box, text="🚀 일괄 분석 시작", command=self._start_batch_analysis, width=200).pack(side="right", padx=10)
+        
+        self.monitor_btn = ctk.CTkButton(btn_box, text="👁️ 폴더 감시 시작", command=self._toggle_monitor, width=150, fg_color="#f39c12", hover_color="#e67e22")
+        self.monitor_btn.pack(side="right", padx=10)
+
+        # Progress Area (Hidden by default)
+        self.progress_frame = ctk.CTkFrame(self.view_main, fg_color="transparent")
+        self.progress_frame.pack(fill="x", padx=40, pady=(0, 20))
+        
+        self.progress_label = ctk.CTkLabel(self.progress_frame, text="", font=ctk.CTkFont(size=12))
+        self.progress_label.pack(anchor="w")
+        
+        self.progress_bar = ctk.CTkProgressBar(self.progress_frame, width=800)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill="x", pady=5)
+        self.progress_bar.pack_forget() # Initially hidden
+
+    def _build_history_view(self):
+        self.view_history = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
+        
+        header = ctk.CTkFrame(self.view_history, fg_color="transparent")
+        header.pack(fill="x", padx=30, pady=(30, 10))
+        
+        ctk.CTkLabel(header, text="분석 아카이브", font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        
+        # Search & Compare Buttons
+        btn_row = ctk.CTkFrame(header, fg_color="transparent")
+        btn_row.pack(side="right")
+        
+        self.btn_compare = ctk.CTkButton(btn_row, text="⚖️ 문서 비교 (0/2)", width=120, fg_color="#e74c3c", command=self._start_comparison)
+        self.btn_compare.pack(side="left", padx=5)
+
+        self.search_entry = ctk.CTkEntry(btn_row, placeholder_text="📄 검색...", width=200)
+        self.search_entry.pack(side="left", padx=5)
+        self.search_entry.bind("<KeyRelease>", lambda e: self._refresh_history_ui())
+
+        self.history_container = ctk.CTkScrollableFrame(self.view_history, corner_radius=15)
+        self.history_container.pack(fill="both", expand=True, padx=30, pady=(0, 30))
+
+    def _build_settings_view(self):
+        self.view_settings = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
+        ctk.CTkLabel(self.view_settings, text="시스템 설정", font=ctk.CTkFont(size=24, weight="bold")).pack(pady=30, padx=30, anchor="w")
+        
+        s_container = ctk.CTkScrollableFrame(self.view_settings, corner_radius=15)
+        s_container.pack(fill="both", expand=True, padx=30, pady=(0, 30))
+
+        # AI Provider Choice
+        ctk.CTkLabel(s_container, text="AI 분석 엔진 선택", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5), anchor="w", padx=20)
+        self.ai_provider = ctk.CTkSegmentedButton(s_container, values=["Gemini 3.0 Flash", "Ollama (Local)"], command=self._on_provider_change)
+        self.ai_provider.pack(fill="x", padx=20, pady=5)
+        
+        # Settings Content Container (to maintain fixed order)
+        self.settings_content_frame = ctk.CTkFrame(s_container, fg_color="transparent")
+        self.settings_content_frame.pack(fill="x", padx=20, pady=10)
+
+        # Gemini Settings
+        self.gemini_frame = ctk.CTkFrame(self.settings_content_frame, fg_color="transparent")
+        ctk.CTkLabel(self.gemini_frame, text="Gemini API Key").pack(anchor="w")
+        self.entry_api_key = ctk.CTkEntry(self.gemini_frame, placeholder_text="API Key를 입력하세요", show="*", width=400)
+        self.entry_api_key.pack(fill="x", pady=5)
+        
+        # Ollama Settings
+        self.ollama_frame = ctk.CTkFrame(self.settings_content_frame, fg_color="transparent")
+        ctk.CTkLabel(self.ollama_frame, text="Ollama Server URL").pack(anchor="w")
+        self.entry_ollama_url = ctk.CTkEntry(self.ollama_frame, placeholder_text="http://localhost:11434")
+        self.entry_ollama_url.pack(fill="x", pady=5)
+        ctk.CTkLabel(self.ollama_frame, text="Model Name").pack(anchor="w")
+        self.entry_ollama_model = ctk.CTkEntry(self.ollama_frame, placeholder_text="llama3")
+        self.entry_ollama_model.pack(fill="x", pady=5)
+
+        # Monitor Settings
+        ctk.CTkLabel(s_container, text="자동 감시 폴더 설정", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5), anchor="w", padx=20)
+        monitor_box = ctk.CTkFrame(s_container, fg_color="transparent")
+        monitor_box.pack(fill="x", padx=20, pady=5)
+        self.entry_monitor_path = ctk.CTkEntry(monitor_box, placeholder_text="분석할 폴더를 선택하세요")
+        self.entry_monitor_path.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkButton(monitor_box, text="찾기", width=80, command=self._browse_monitor_folder).pack(side="right")
+
+        # Save Button
+        ctk.CTkButton(s_container, text="설정 저장 및 적용", command=self._save_all_settings).pack(pady=30)
+
+        # Load current state
+        self._load_settings_into_ui()
+
+    def show_view(self, view_name):
+        for v in [self.view_main, self.view_history, self.view_settings]:
+            v.pack_forget()
+        
+        if view_name == "main":
+            self.view_main.pack(fill="both", expand=True)
+        elif view_name == "history":
+            self.view_history.pack(fill="both", expand=True)
+            self._refresh_history_ui()
+        elif view_name == "settings":
+            self.view_settings.pack(fill="both", expand=True)
+
+    def _load_settings_into_ui(self):
+        if not self.config: return
+        
+        # 레거시 이름 호환성 처리
+        current_provider = self.config.get_config("ai_provider", "Gemini 3.0 Flash")
+        if current_provider == "Gemini API":
+            current_provider = "Gemini 3.0 Flash"
             
-        def open_guide():
-            import webbrowser
-            webbrowser.open("https://aistudio.google.com/app/apikey")
+        self.ai_provider.set(current_provider)
+        self._on_provider_change(current_provider)
+        
+        self.entry_api_key.insert(0, self.config.get_api_key() or "")
+        self.entry_ollama_url.insert(0, self.config.get_config("ollama_url", "http://localhost:11434"))
+        self.entry_ollama_model.insert(0, self.config.get_config("ollama_model", "exaone3.5:2.4b"))
+        self.entry_monitor_path.insert(0, self.config.get_config("monitor_folder", ""))
+
+    def _on_provider_change(self, value):
+        # UI 순서와 가시성을 완벽하게 제어
+        if "Gemini" in value:
+            self.ollama_frame.pack_forget()
+            self.gemini_frame.pack(fill="x")
+        else:
+            self.gemini_frame.pack_forget()
+            self.ollama_frame.pack(fill="x")
+
+    def _save_all_settings(self):
+        if not self.config: return
+        self.config.set_api_key(self.entry_api_key.get().strip())
+        self.config.set_config("ai_provider", self.ai_provider.get())
+        self.config.set_config("ollama_url", self.entry_ollama_url.get().strip())
+        
+        # 모델명 안전 처리 (사용자 실수 방지)
+        raw_model = self.entry_ollama_model.get().strip()
+        # exaone3.5.2.4b -> exaone3.5:2.4b 자동 보정
+        if "exaone" in raw_model.lower() and ":" not in raw_model and raw_model.count(".") >= 2:
+            fixed_model = raw_model.replace("3.5.", "3.5:")
+            logger.info(f"Auto-corrected model name: {raw_model} -> {fixed_model}")
+            raw_model = fixed_model
+            # UI에도 반영
+            self.entry_ollama_model.delete(0, tk.END)
+            self.entry_ollama_model.insert(0, raw_model)
             
-        tk.Button(self.root, text="🔑 API Key 발급 가이드 (무료)", command=open_guide, fg='blue', cursor='hand2', relief=tk.FLAT).pack(pady=5)
+        self.config.set_config("ollama_model", raw_model)
+        self.config.set_config("monitor_folder", self.entry_monitor_path.get().strip())
+        
+        self.root.focus_set() # 저장 후 포커스 해제
+        
+        selected_p = self.ai_provider.get()
+        display_model = "Gemini 3.0 Flash" if "Gemini" in selected_p else raw_model
+        messagebox.showinfo("성공", f"설정이 저장되었습니다.\n엔진: {selected_p}\n모델: {display_model}")
 
-        result = {'key': None}
+    def _browse_monitor_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.entry_monitor_path.delete(0, tk.END)
+            self.entry_monitor_path.insert(0, path)
 
-        def on_save():
-            val = key_entry.get().strip()
-            if not val:
-                messagebox.showwarning("경고", "API Key를 입력해야 사용 가능합니다.")
+    def _add_files_to_batch(self):
+        files = filedialog.askopenfilenames(title="분석할 파일 선택")
+        if files:
+            self.batch_files.extend(files)
+            self._update_batch_list()
+
+    def _update_batch_list(self):
+        # 기존 리스트 클리어
+        for widget in self.batch_list_container.winfo_children():
+            widget.destroy()
+            
+        if not self.batch_files:
+            self.empty_label = ctk.CTkLabel(self.batch_list_container, 
+                                            text="분석할 파일을 드래그하거나 [파일 추가] 버튼을 눌러주세요.\n현재 일괄 처리 및 폴더 감시 모드를 지원합니다.",
+                                            text_color="gray")
+            self.empty_label.pack(pady=50)
+            return
+
+        for i, f in enumerate(self.batch_files):
+            row = ctk.CTkFrame(self.batch_list_container, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            
+            # 파일명
+            ctk.CTkLabel(row, text=f"• {os.path.basename(f)}", anchor="w").pack(side="left", padx=10, fill="x", expand=True)
+            
+            # 삭제 버튼
+            remove_btn = ctk.CTkButton(row, text="✕", width=30, height=24, 
+                                        fg_color="#e74c3c", hover_color="#c0392b",
+                                        command=lambda idx=i: self._remove_from_batch(idx))
+            remove_btn.pack(side="right", padx=10)
+
+    def _remove_from_batch(self, index):
+        if 0 <= index < len(self.batch_files):
+            del self.batch_files[index]
+            self._update_batch_list()
+
+    def _start_batch_analysis(self):
+        if not self.batch_files:
+            messagebox.showwarning("알림", "분석할 파일을 먼저 추가해 주세요.")
+            return
+        # handler is injected from agent_main.py
+        if hasattr(self, 'batch_handler'):
+            self.batch_handler(self.batch_files)
+            self.batch_files = []
+            self._update_batch_list()
+
+    def _toggle_monitor(self):
+        if self.is_monitoring:
+            if hasattr(self, 'monitor_stop_handler'):
+                self.monitor_stop_handler()
+            self.monitor_btn.configure(text="👁️ 폴더 감시 시작", fg_color="#f39c12")
+            self.is_monitoring = False
+        else:
+            path = self.entry_monitor_path.get().strip()
+            if not path or not os.path.exists(path):
+                messagebox.showwarning("경고", "올바른 감시 폴더를 설정해 주세요.")
                 return
-            result['key'] = val
-            self.root.quit()
+            if hasattr(self, 'monitor_start_handler'):
+                self.monitor_start_handler(path)
+            self.monitor_btn.configure(text="🛑 감시 중지", fg_color="#e74c3c")
+            self.is_monitoring = True
 
-        tk.Button(self.root, text="저장하고 시작하기", command=on_save, bg='#007bff', fg='white', width=20, font=('Malgun Gothic', 10, 'bold')).pack(pady=30)
-
-        self.root.mainloop()
-        self.root.withdraw()
-        self._clear_root()
-        return result['key']
-
-    def show_history(self, history_data: list):
-        """로컬 히스토리 보기 팝업 (AI Summary 중심 Card-based UI)"""
-        import re
-        history_win = tk.Toplevel(self.root)
-        history_win.title("📜 로컬 분석 아카이브")
-        history_win.geometry("900x750")
-        self._center_window(history_win)
-        history_win.configure(bg='#f4f7f9')
-        history_win.attributes('-topmost', True) 
-
-        # Header
-        header_frame = tk.Frame(history_win, bg='#1a237e', pady=25)
-        header_frame.pack(fill=tk.X)
-        tk.Label(header_frame, text="로컬 분석 아카이브", font=('Malgun Gothic', 20, 'bold'), bg='#1a237e', fg='white').pack()
-        tk.Label(header_frame, text="서버에 저장되지 않은, 선생님 PC만의 공문 분석 기록고입니다.", font=('Malgun Gothic', 10), bg='#1a237e', fg='#c5cae9').pack()
-
-        # Canvas for scrolling
-        container = tk.Frame(history_win, bg='#f4f7f9')
-        container.pack(expand=True, fill=tk.BOTH, padx=25, pady=20)
+    def _refresh_history_ui(self):
+        for widget in self.history_container.winfo_children():
+            widget.destroy()
         
-        canvas = tk.Canvas(container, bg='#f4f7f9', highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg='#f4f7f9')
+        if hasattr(self, 'history_fetcher'):
+            data = self.history_fetcher()
+            query = self.search_entry.get().lower()
+            
+            for item in data:
+                title = item.get("analysis", {}).get("title", "").lower()
+                filename = item.get("filename", "").lower()
+                
+                if query in title or query in filename:
+                    self._create_history_card(item)
 
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=840)
-        canvas.configure(yscrollcommand=scrollbar.set)
+    def _create_history_card(self, item):
+        card = ctk.CTkFrame(self.history_container, corner_radius=10)
+        card.pack(fill="x", padx=10, pady=5)
         
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # 1. 상세 보기 버튼을 오른쪽에 배치
+        btn_detail = ctk.CTkButton(card, text="상세 보기", width=80, command=lambda: self._show_record_detail(item))
+        btn_detail.pack(side="right", padx=(5, 15), pady=10)
 
-        if not history_data:
-            tk.Label(scrollable_frame, text="분석된 공문이 없습니다.", font=('Malgun Gothic', 11), fg='gray', bg='#f4f7f9', pady=100).pack()
+        # 2. 삭제 버튼 (X)
+        btn_delete = ctk.CTkButton(card, text="✕", width=30, height=30, fg_color="#e74c3c", hover_color="#c0392b", 
+                                   command=lambda: self._delete_history_item(item))
+        btn_delete.pack(side="right", padx=(5, 5), pady=10)
+
+        # 2. 체크박스 배치
+        cb = ctk.CTkCheckBox(card, text="", width=20, command=lambda: self._on_compare_select(item, cb))
+        cb.pack(side="left", padx=10)
         
-        selected_indices = []
+        # 3. 정보 텍스트 영역 (나머지 공간 차지)
+        info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        info_frame.pack(side="left", fill="both", expand=True)
 
-        def toggle_select(idx, item):
-            if idx in selected_indices:
-                selected_indices.remove(idx)
-            else:
-                if len(selected_indices) >= 2:
-                    messagebox.showwarning("알림", "최대 2개의 문서만 비교 가능합니다.")
-                    return False
-                selected_indices.append(idx)
-            return True
+        title = item.get("analysis", {}).get("title", "Unknown")
+        # 제목 클릭 시 상세 보기 열리도록 바인딩
+        lbl_title = ctk.CTkLabel(info_frame, text=title, font=ctk.CTkFont(weight="bold"), cursor="hand2")
+        lbl_title.pack(anchor="w", padx=5, pady=(5, 0))
+        lbl_title.bind("<Button-1>", lambda e: self._show_record_detail(item))
 
-        for idx, item in enumerate(history_data):
-            card = tk.Frame(scrollable_frame, bg='white', relief=tk.FLAT, pady=18, padx=25)
-            card.pack(fill=tk.X, pady=12, padx=10)
-            card.configure(highlightbackground="#d1d9e6", highlightthickness=1)
+        # 긴 파일명/날짜 텍스트가 버튼을 밀어내지 않도록 wraplength 설정
+        meta_text = f"📅 {item.get('timestamp')} | {item.get('filename')}"
+        lbl_meta = ctk.CTkLabel(info_frame, text=meta_text, font=ctk.CTkFont(size=10), text_color="gray", 
+                               justify="left", wraplength=500)
+        lbl_meta.pack(anchor="w", padx=5, pady=(0, 5))
+        lbl_meta.bind("<Button-1>", lambda e: self._show_record_detail(item))
 
-            # Checkbox for comparison
-            var = tk.BooleanVar()
-            cb = tk.Checkbutton(card, variable=var, bg='white', command=lambda i=idx, it=item: toggle_select(i, it))
-            cb.pack(side=tk.LEFT, anchor='n', padx=(0, 10))
+    def _delete_history_item(self, item):
+        if not hasattr(self, 'delete_handler'): return
+        
+        filename = item.get("filename", "Unknown")
+        if messagebox.askyesno("기록 삭제", f"'{filename}' 분석 기록을 정말 삭제하시겠습니까?"):
+            if self.delete_handler(item.get("timestamp"), item.get("filename")):
+                self._refresh_history_ui()
 
-            content_frame = tk.Frame(card, bg='white')
-            content_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH)
-
-            analysis = item.get("analysis", {})
-            title = analysis.get("title", "제목 없음")
-            dt = item.get("timestamp", "")
-            
-            # Title
-            tk.Label(content_frame, text=title, font=('Malgun Gothic', 15, 'bold'), bg='white', fg='#1a237e', wraplength=700, justify=tk.LEFT).pack(anchor='w')
-            # Meta
-            tk.Label(content_frame, text=f"📅 {dt}  |  📂 {item.get('filename')}", font=('Malgun Gothic', 9), bg='white', fg='#78909c').pack(anchor='w', pady=(2, 10))
-            
-            # AI Summary
-            summary = analysis.get("summary", "")
-            if not summary:
-                snip = item.get("content_snippet", "")
-                snip = re.sub(r'#+\s*HWP\s*변환\s*결과', '', snip)
-                snip = re.sub(r'[|#\-_]', ' ', snip).strip()
-                summary = f"[자동 요약 미사용 문서] {snip[:200]}..."
-
-            summ_box = tk.Label(content_frame, text=summary, font=('Malgun Gothic', 10), bg='#ffffff', fg='#37474f', 
-                                pady=12, padx=12, wraplength=700, justify=tk.LEFT, relief=tk.SOLID, borderwidth=1)
-            summ_box.pack(fill=tk.X, pady=(0, 10))
-            
-            if analysis.get("summary"):
-                summ_box.configure(highlightbackground="#4caf50", highlightthickness=1)
-            else:
-                summ_box.configure(highlightbackground="#e3f2fd", highlightthickness=1)
-
-            # Footer
-            footer = tk.Frame(content_frame, bg='white')
-            footer.pack(fill=tk.X)
-            
-            kw_f = tk.Frame(footer, bg='white')
-            kw_f.pack(side=tk.LEFT)
-            for kw in (analysis.get("keywords") or [])[:5]:
-                tk.Label(kw_f, text=f"#{kw}", font=('Malgun Gothic', 8, 'bold'), bg='#e8eaf6', fg='#3f51b5', padx=6, pady=2).pack(side=tk.LEFT, padx=3)
-
-            def open_d(r): return lambda: self._show_record_detail(r)
-            tk.Button(footer, text="정밀 분석 및 조치사항 보기 →", command=open_d(item), relief=tk.FLAT, font=('Malgun Gothic', 9, 'bold'), fg='#1a237e', bg='white', cursor='hand2').pack(side=tk.RIGHT)
-
-        def on_compare():
-            if len(selected_indices) != 2:
-                messagebox.showwarning("알림", "비교할 두 개의 문서를 선택해주세요.")
+    def _on_compare_select(self, item, cb):
+        if cb.get():
+            if len(self.selected_comparison) >= 2:
+                cb.deselect()
+                messagebox.showwarning("알림", "최대 2개의 문서만 비교 가능합니다.")
                 return
-            doc_a = history_data[selected_indices[0]]
-            doc_b = history_data[selected_indices[1]]
-            self._show_comparison_window(doc_a, doc_b)
-
-        bottom_btn_frame = tk.Frame(history_win, bg='#f4f7f9', pady=20)
-        bottom_btn_frame.pack(fill=tk.X)
+            self.selected_comparison.append(item)
+        else:
+            if item in self.selected_comparison:
+                self.selected_comparison.remove(item)
         
-        tk.Button(bottom_btn_frame, text="⚖️ 선택한 두 문서 비교하기 (AI 분석)", command=on_compare, bg='#673ab7', fg='white', 
-                  width=40, font=('Malgun Gothic', 11, 'bold'), pady=10).pack(side=tk.LEFT, padx=50)
+        self.btn_compare.configure(text=f"⚖️ 문서 비교 ({len(self.selected_comparison)}/2)")
+
+    def _start_comparison(self):
+        if len(self.selected_comparison) != 2:
+            messagebox.showwarning("알림", "비교할 두 개의 문서를 체크박스로 선택해 주세요.")
+            return
         
-        tk.Button(bottom_btn_frame, text="닫기", command=history_win.destroy, width=15, bg='#455a64', fg='white', 
-                  font=('Malgun Gothic', 10, 'bold'), pady=10).pack(side=tk.RIGHT, padx=50)
+        doc_a = self.selected_comparison[0]
+        doc_b = self.selected_comparison[1]
         
-        history_win.lift()
-
-    def _show_comparison_window(self, doc_a, doc_b):
-        """두 문서 비교 분석창"""
-        compare_win = tk.Toplevel(self.root)
-        compare_win.title("⚖️ 신구 대조 및 변경사항 분석")
-        compare_win.geometry("900x800")
-        self._center_window(compare_win)
-        compare_win.attributes('-topmost', True)
-        compare_win.configure(bg='white')
-
-        # Header
-        header = tk.Frame(compare_win, bg='#311b92', pady=20)
-        header.pack(fill=tk.X)
-        tk.Label(header, text="신구 대조 및 변경사항 분석", font=('Malgun Gothic', 18, 'bold'), bg='#311b92', fg='white').pack()
+        comp_win = ctk.CTkToplevel(self.root)
+        comp_win.title("AI 문서 비교 분석")
+        comp_win.geometry("800x600")
         
-        # Subtitle
-        sub = tk.Frame(compare_win, bg='white', pady=10)
-        sub.pack(fill=tk.X, padx=30)
-        tk.Label(sub, text=f"대조군 A: {doc_a['analysis'].get('title')}", font=('Malgun Gothic', 10), bg='white', fg='gray').pack(side=tk.LEFT)
-        tk.Label(sub, text=" vs ", font=('Malgun Gothic', 10, 'bold'), bg='white').pack(side=tk.LEFT)
-        tk.Label(sub, text=f"실험군 B: {doc_b['analysis'].get('title')}", font=('Malgun Gothic', 10), bg='white', fg='#1a237e').pack(side=tk.LEFT)
-
-        # Result Area
-        res_area = scrolledtext.ScrolledText(compare_win, font=('Malgun Gothic', 11), bg='#fff9c4', padx=20, pady=20)
-        res_area.pack(expand=True, fill=tk.BOTH, padx=30, pady=20)
-        res_area.insert(tk.END, "AI 분석 중입니다... 잠시만 기다려주세요.")
-        res_area.config(state='disabled')
-
-        def run_compare():
+        # 팝업 가림 방지
+        comp_win.attributes("-topmost", True)
+        comp_win.after(100, lambda: comp_win.attributes("-topmost", False))
+        comp_win.lift()
+        comp_win.focus_force()
+        
+        ctk.CTkLabel(comp_win, text="⚖️ 두 문서 비교 결과", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        
+        result_box = ctk.CTkTextbox(comp_win, width=750, height=450)
+        result_box.pack(padx=20, pady=10)
+        result_box.insert("0.0", "AI가 두 문서를 비교 중입니다... 잠시만 기다려 주세요.")
+        
+        def run_comp():
             if hasattr(self, 'compare_handler'):
-                res = self.compare_handler(doc_a.get('full_content'), doc_b.get('full_content'))
-                res_area.config(state='normal')
-                res_area.delete("1.0", tk.END)
-                res_area.insert(tk.END, res)
-                res_area.config(state='disabled')
-
-        compare_win.after(500, run_compare)
+                res = self.compare_handler(doc_a['full_content'], doc_b['full_content'])
+                result_box.delete("0.0", tk.END)
+                result_box.insert("0.0", res)
         
-        tk.Button(compare_win, text="닫기", command=compare_win.destroy, bg='#1a237e', fg='white', width=20, pady=10).pack(pady=15)
+        threading.Thread(target=run_comp, daemon=True).start()
 
-    def _show_record_detail(self, record):
-        """상세 보고서 (Summary + Action Items)"""
-        detail_win = tk.Toplevel(self.root)
-        detail_win.title("📄 AI 정밀 분석 보고서")
-        detail_win.geometry("850x850")
-        self._center_window(detail_win)
-        detail_win.attributes('-topmost', True)
-        detail_win.configure(bg='white')
-        
-        analysis = record.get("analysis", {})
-        
-        # Header
-        header = tk.Frame(detail_win, bg='white', pady=25, padx=40)
-        header.pack(fill=tk.X)
-        tk.Label(header, text=analysis.get('title'), font=('Malgun Gothic', 20, 'bold'), bg='white', fg='#1a237e', wraplength=750, justify=tk.LEFT).pack(anchor='w')
-        tk.Label(header, text=f"문서번호: {analysis.get('doc_number') or '없음'} | 일자: {analysis.get('date') or '미상'}", font=('Malgun Gothic', 10), bg='white', fg='#90a4ae').pack(anchor='w', pady=5)
-        
-        container = tk.Frame(detail_win, bg='white', padx=40)
-        container.pack(expand=True, fill=tk.BOTH)
-
-        # 1. Action Items (Highlight)
-        actions = analysis.get("action_items", [])
-        if actions:
-            a_frame = tk.Frame(container, bg='#fff8e1', pady=15, padx=20, relief=tk.SOLID, borderwidth=1)
-            a_frame.pack(fill=tk.X, pady=(0, 20))
-            tk.Label(a_frame, text="✅ 조치 및 강조 사항", font=('Malgun Gothic', 12, 'bold'), bg='#fff8e1', fg='#f57f17').pack(anchor='w')
-            for a in actions:
-                tk.Label(a_frame, text=f"• {a}", font=('Malgun Gothic', 10), bg='#fff8e1', justify=tk.LEFT, wraplength=700).pack(anchor='w', padx=10, pady=2)
-
-        # 2. AI Summary
-        tk.Label(container, text="📝 핵심 요약", font=('Malgun Gothic', 12, 'bold'), bg='white', fg='#1a237e').pack(anchor='w', pady=(0, 5))
-        s_txt = tk.Text(container, font=('Malgun Gothic', 11, 'italic' if not analysis.get('summary') else 'normal'), 
-                        bg='#f8f9fa', height=7, relief=tk.FLAT, padx=15, pady=15)
-        s_txt.pack(fill=tk.X, pady=(0, 20))
-        
-        summary_val = analysis.get("summary", "").strip()
-        if not summary_val:
-            summary_val = "해당 문서는 AI 요약 정보가 포함되지 않은 예전 기록이거나, 분석 중 오류가 발생했습니다."
-            
-        s_txt.insert(tk.END, summary_val)
-        s_txt.config(state='disabled')
-
-        # 3. Full Content (Original)
-        tk.Label(container, text="📄 원본 내용 (비식별화 완료)", font=('Malgun Gothic', 12, 'bold'), bg='white', fg='#1a237e').pack(anchor='w', pady=(0, 5))
-        o_txt = scrolledtext.ScrolledText(container, font=('Consolas', 10), bg='#fafafa', height=10)
-        o_txt.pack(fill=tk.BOTH, expand=True)
-        o_txt.insert(tk.END, record.get("full_content", ""))
-        o_txt.config(state='disabled')
-        
-        btn_frame = tk.Frame(detail_win, bg='white', pady=15)
-        btn_frame.pack(fill=tk.X)
-        
-        tk.Button(btn_frame, text="💬 문서에 대해 질문하기 (Chat)", command=lambda: self._show_chat_window(record), 
-                  bg='#4caf50', fg='white', width=30, pady=12, font=('Malgun Gothic', 10, 'bold')).pack(side=tk.LEFT, padx=40)
-        
-        tk.Button(btn_frame, text="닫기", command=detail_win.destroy, bg='#1a237e', fg='white', width=20, pady=12, font=('Malgun Gothic', 10, 'bold')).pack(side=tk.RIGHT, padx=40)
-        detail_win.lift()
-        detail_win.focus_force()
-
-    def _show_chat_window(self, record):
-        """AI와 문서 기반 대화 창"""
-        chat_win = tk.Toplevel(self.root)
-        chat_win.title(f"💬 {record.get('filename')} - AI 채팅")
-        chat_win.geometry("500x650")
-        self._center_window(chat_win)
-        chat_win.attributes('-topmost', True)
-        chat_win.configure(bg='#f8f9fa')
-
-        # Chat History
-        chat_area = scrolledtext.ScrolledText(chat_win, font=('Malgun Gothic', 10), bg='white', state='disabled', padx=10, pady=10)
-        chat_area.pack(expand=True, fill=tk.BOTH, padx=15, pady=15)
-
-        def append_msg(role, msg):
-            chat_area.config(state='normal')
-            tag = "ai" if role == "AI" else "user"
-            chat_area.insert(tk.END, f"[{role}]\n", tag)
-            chat_area.insert(tk.END, f"{msg}\n\n")
-            chat_area.config(state='disabled')
-            chat_area.see(tk.END)
-
-        append_msg("AI", "이 문서에 대해 궁금한 점을 물어보세요! (예: 제출 기한이 언제야?, 예산은 얼마야?)")
-
-        # Input Area
-        input_frame = tk.Frame(chat_win, bg='#f8f9fa', pady=10)
-        input_frame.pack(fill=tk.X, padx=15)
-        
-        entry = tk.Entry(input_frame, font=('Malgun Gothic', 11))
-        entry.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 10))
-        
-        def send_query():
-            query = entry.get().strip()
-            if not query: return
-            entry.delete(0, tk.END)
-            append_msg("나", query)
-            
-            # API 호출을 위해 외부 핸들러가 필요함 (agent_main.py에서 주입받아야 함)
-            if hasattr(self, 'chat_handler'):
-                ans = self.chat_handler(record.get('full_content'), query)
-                append_msg("AI", ans)
-            else:
-                append_msg("AI", "죄송합니다. 채팅 기능이 현재 활성화되지 않았습니다.")
-
-        tk.Button(input_frame, text="전송", command=send_query, bg='#1a237e', fg='white', width=8).pack(side=tk.RIGHT)
-        entry.bind("<Return>", lambda e: send_query())
-
-        chat_win.focus_force()
-
-    def show_main_menu(self) -> str:
-        """메인 대시보드 메뉴"""
-        self.root.deiconify()
-        # 중요: 메인메뉴는 다른 창을 가리면 안되므로 topmost 해제
-        self.root.attributes('-topmost', False) 
-        self.root.geometry("500x480")
-        self._center_window(self.root)
-        
-        # UI Code same as before...
-        tk.Label(self.root, text="🏫 School-Doc Genie Agent", font=('Malgun Gothic', 16, 'bold'), fg='#007bff').pack(pady=25)
-        btn_style = {'width': 30, 'font': ('Malgun Gothic', 11), 'pady': 10}
-        result = {'choice': 'exit'}
-        def set_choice(c):
-            result['choice'] = c
-            self.root.quit()
-
-        tk.Button(self.root, text="📄 새 문서 분석 시작", command=lambda: set_choice('process'), bg='#e3f2fd', **btn_style).pack(pady=10)
-        tk.Button(self.root, text="📜 로컬 분석 기록 보기 (Premium)", command=lambda: set_choice('history'), **btn_style).pack(pady=10)
-        tk.Button(self.root, text="⚙️ 설정 (API Key 변경)", command=lambda: set_choice('settings'), **btn_style).pack(pady=10)
-        tk.Button(self.root, text="❌ 프로그램 종료", command=lambda: set_choice('exit'), **btn_style).pack(pady=10)
-        tk.Label(self.root, text="v0.5.0 Intelligent Hybrid", font=('Arial', 8), fg='gray').pack(side=tk.BOTTOM, pady=10)
-
-        self.root.mainloop()
-        self._clear_root()
-        return result['choice']
-
-    def select_file(self):
-        self.root.deiconify()
-        file_path = filedialog.askopenfilename(title="파일 선택")
-        self.root.withdraw()
-        return file_path
-
+    # Legacy Compatibility Methods (Modified for CTAk)
     def show_message(self, title, message, is_error=False):
         if is_error:
             messagebox.showerror(title, message)
         else:
             messagebox.showinfo(title, message)
-            
-    def _center_window(self, win):
-        win.update_idletasks()
-        width = win.winfo_width()
-        height = win.winfo_height()
-        x = (win.winfo_screenwidth() // 2) - (width // 2)
-        y = (win.winfo_screenheight() // 2) - (height // 2)
-        win.geometry('{}x{}+{}+{}'.format(width, height, x, y))
 
-    def _clear_root(self):
-        """메인 창의 모든 위젯 삭제 (Bug Fix: Check if root exists)"""
+    def show_disclaimer(self) -> bool:
+        # Simplfied for modern UI
+        res = messagebox.askyesno("이용 약관 동의", "School-Doc Genie Intelligent Hybrid 에이전트 이용 약관에 동의하십니까?\n(로컬 처리 및 서버 스테이트리스 원칙 준수)")
+        if res: self.root.deiconify()
+        return res
+
+    def show_main_menu(self):
+        # Already handled by CTAk tabs, but kept for agent_main loop compatibility
+        self._show_window()
+        self.root.mainloop()
+        return "exit" # Default behavior
+
+    def _show_record_detail(self, record):
+        # Toplevel for detail analysis
+        detail_win = ctk.CTkToplevel(self.root)
+        detail_win.title(f"상세 분석 - {record['filename']}")
+        detail_win.geometry("900x850")
+        
+        # 팝업 가림 방지 로직
+        detail_win.attributes("-topmost", True)
+        detail_win.after(100, lambda: detail_win.attributes("-topmost", False))
+        detail_win.lift()
+        detail_win.focus_force()
+        
+        # 1. Metadata Header (데이터 수집 정보)
+        meta_frame = ctk.CTkFrame(detail_win, fg_color="transparent")
+        meta_frame.pack(fill="x", padx=30, pady=(20, 10))
+        
+        analysis = record.get('analysis', {})
+        ctk.CTkLabel(meta_frame, text=analysis.get('title', '제목 없음'), font=ctk.CTkFont(size=22, weight="bold")).pack(anchor="w")
+        
+        info_str = f"📅 날짜: {analysis.get('date', '미추출')}  |  📄 문서번호: {analysis.get('doc_number', '미추출')}"
+        ctk.CTkLabel(meta_frame, text=info_str, font=ctk.CTkFont(size=13), text_color="#3498db").pack(anchor="w", pady=5)
+
+        # 2. Main Content
+        tabview = ctk.CTkTabview(detail_win, width=840, height=450)
+        tabview.pack(padx=20, pady=10)
+        
+        tab_sum = tabview.add("핵심 요약 & 조치")
+        tab_raw = tabview.add("원본 텍스트")
+        
+        # Summary & Actions Tab
+        sum_txt = ctk.CTkTextbox(tab_sum, width=800, height=380)
+        sum_txt.pack(padx=10, pady=10)
+        
+        summary = analysis.get('summary', '요약 정보가 없습니다.')
+        actions = "\n".join([f"• {a}" for a in analysis.get('action_items', [])])
+        sum_txt.insert("0.0", f"【 핵심 요약 】\n{summary}\n\n【 조치 사항 및 일정 】\n{actions}")
+        sum_txt.configure(state="disabled")
+        
+        # Raw Content Tab
+        raw_txt = ctk.CTkTextbox(tab_raw, width=800, height=380)
+        raw_txt.pack(padx=10, pady=10)
+        raw_txt.insert("0.0", record.get('full_content', '내용 없음'))
+        raw_txt.configure(state="disabled")
+
+        # 3. AI Chat Interface (저장 기능 포함)
+        chat_frame = ctk.CTkFrame(detail_win, corner_radius=15, fg_color="#34495e")
+        chat_frame.pack(fill="x", padx=30, pady=10)
+        
+        ctk.CTkLabel(chat_frame, text="💬 이 문서에 대해 무엇이든 물어보세요 (AI Chat)", text_color="white", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+        
+        # 이전 채팅 내역 표시 영역
+        history_box = ctk.CTkTextbox(chat_frame, height=150, width=800, fg_color="#2c3e50", text_color="white")
+        if record.get("chat_history"):
+            history_box.pack(padx=15, pady=5)
+            for chat in record["chat_history"]:
+                history_box.insert("end", f"Q: {chat['query']}\nA: {chat['answer']}\n{'-'*40}\n")
+            history_box.configure(state="disabled")
+            history_box.see("end")
+
+        chat_input_row = ctk.CTkFrame(chat_frame, fg_color="transparent")
+        chat_input_row.pack(fill="x", padx=15, pady=(0, 15))
+        
+        chat_entry = ctk.CTkEntry(chat_input_row, placeholder_text="예: 이 공문의 예산 지원 자격이 뭐야?", height=40)
+        chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        chat_entry.focus_set() # 창이 열리면 바로 타이핑 가능하게 포커스
+        
+        def send_chat(event=None): # 엔터키 이벤트 대응을 위해 event 매개변수 추가
+            query = chat_entry.get().strip()
+            if not query: return
+            
+            chat_entry.delete(0, tk.END)
+            ans_win = ctk.CTkToplevel(detail_win)
+            ans_win.title("AI 답변")
+            ans_win.geometry("500x400")
+            
+            # 팝업 가림 방지 (답변 창에도 적용)
+            ans_win.attributes("-topmost", True)
+            ans_win.after(100, lambda: ans_win.attributes("-topmost", False))
+            ans_win.lift()
+            ans_win.focus_force()
+            
+            ans_box = ctk.CTkTextbox(ans_win, width=460, height=350)
+            ans_box.pack(padx=20, pady=20)
+            ans_box.insert("0.0", "AI가 생각 중입니다... 잠시만 기다려 주세요.")
+            
+            def perform_ai_call():
+                if hasattr(self, 'chat_handler'):
+                    answer = self.chat_handler(record.get('full_content', ''), query)
+                    # 창이 아직 존재하는지 확인
+                    if ans_win.winfo_exists():
+                        ans_box.configure(state="normal")
+                        ans_box.delete("0.0", tk.END)
+                        ans_box.insert("0.0", f"Q: {query}\n\n{answer}")
+                        ans_box.configure(state="disabled")
+                    
+                    # 채팅 내역 저장 요청
+                    if hasattr(self, 'chat_save_handler'):
+                        self.chat_save_handler(record.get('timestamp'), record.get('filename'), query, answer)
+            
+            threading.Thread(target=perform_ai_call, daemon=True).start()
+
+        # 엔터키 바인딩
+        chat_entry.bind("<Return>", send_chat)
+        ctk.CTkButton(chat_input_row, text="질문하기", width=100, command=send_chat, fg_color="#2ecc71").pack(side="right")
+
+        # 4. Action Buttons (행정 편의)
+        conv_frame = ctk.CTkFrame(detail_win, fg_color="transparent")
+        conv_frame.pack(fill="x", padx=30, pady=(0, 20))
+        
+        ctk.CTkButton(conv_frame, text="📋 관련 근거 복사", command=lambda: self._copy_reference(record), width=180, fg_color="#3498db").pack(side="left", padx=10)
+        ctk.CTkButton(conv_frame, text="📅 일정 추출 (.ics)", command=lambda: self._export_ics(record), width=180, fg_color="#9b59b6").pack(side="left", padx=10)
+
+    def _copy_reference(self, record):
+        from datetime import datetime
+        title = record['analysis'].get('title', '문서 분석')
+        ts = record.get('timestamp', '')
         try:
-            if not self.root.winfo_exists():
-                return
-            for widget in self.root.winfo_children():
-                widget.destroy()
-        except Exception:
-            pass # 이미 죽었으면 무시
+            # 보수적으로 형식이 다를 수 있으므로 체크
+            if " " in ts: # 2025-12-31 13:37:58 형태
+                date_part = ts.split(" ")[0].replace("-", ".")
+            else:
+                date_part = datetime.now().strftime("%Y.%m.%d")
+        except:
+            date_part = datetime.now().strftime("%Y.%m.%d")
+        
+        ref_text = f"관련: {title}({date_part}.)"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(ref_text)
+        self.root.update()
+        messagebox.showinfo("복사 완료", f"클립보드에 복사되었습니다:\n{ref_text}")
+
+    def _export_ics(self, record):
+        try:
+            from icalendar import Calendar, Event
+            from datetime import datetime, timedelta
+            import webbrowser
+            import os
+            import re
+            import tkinter as tk
+        except ImportError:
+            messagebox.showerror("오류", "icalendar 라이브러리가 필요합니다.\npip install icalendar를 실행해 주세요.")
+            return
+
+        actions = record['analysis'].get('action_items', [])
+        if not actions:
+            messagebox.showwarning("알림", "추출할 조치 사항이 없습니다.")
+            return
+
+        # 1. 일정 추출 로직
+        date_pattern = re.compile(r'(\d{4}[-./])?(\d{1,2})[-./월]\s*(\d{1,2})일?')
+        extracted_events = []
+        
+        for action in actions:
+            event_date = datetime.now()
+            match = date_pattern.search(action)
+            is_detected = False
+            if match:
+                try:
+                    month = int(match.group(2))
+                    day = int(match.group(3))
+                    year = int(match.group(1).strip('-./')) if match.group(1) else datetime.now().year
+                    event_date = datetime(year, month, day)
+                    is_detected = True
+                except: pass
+            
+            extracted_events.append({
+                "date": event_date.strftime("%Y-%m-%d"),
+                "summary": action,
+                "is_detected": is_detected,
+                "raw_dt": event_date
+            })
+
+        # 2. 미리보기 창 띄우기
+        preview_win = ctk.CTkToplevel(self.root)
+        preview_win.title("캘린더 일정 미리보기")
+        preview_win.geometry("600x500")
+        preview_win.attributes("-topmost", True)
+        preview_win.grab_set()
+
+        ctk.CTkLabel(preview_win, text="📅 추출된 일정 목록", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=15)
+        
+        scroll_frame = ctk.CTkScrollableFrame(preview_win, width=550, height=300)
+        scroll_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+        for item in extracted_events:
+            row = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            
+            date_color = "#2ecc71" if item["is_detected"] else "#e67e22"
+            detect_tag = "[감지]" if item["is_detected"] else "[오늘]"
+            
+            date_lbl = ctk.CTkLabel(row, text=f"{item['date']} {detect_tag}", text_color=date_color, font=ctk.CTkFont(weight="bold"), width=120)
+            date_lbl.pack(side="left", padx=5)
+            
+            summary_lbl = ctk.CTkLabel(row, text=item['summary'], anchor="w", wraplength=380, justify="left")
+            summary_lbl.pack(side="left", padx=5, fill="x", expand=True)
+
+        def proceed_save():
+            preview_win.destroy()
+            
+            cal = Calendar()
+            cal.add('prodid', '-//School-Doc Genie//')
+            cal.add('version', '2.0')
+            
+            for item in extracted_events:
+                event = Event()
+                event.add('summary', f"[학교] {item['summary']}")
+                event.add('dtstart', item['raw_dt'])
+                event.add('dtend', item['raw_dt'] + timedelta(hours=1))
+                cal.add_component(event)
+
+            save_path = filedialog.asksaveasfilename(defaultextension=".ics", 
+                                                   initialfile=f"{record['analysis'].get('title', '일정')}_일정.ics",
+                                                   title="캘린더 파일 저장")
+            if save_path:
+                with open(save_path, 'wb') as f:
+                    f.write(cal.to_ical())
+                
+                self.root.clipboard_clear()
+                self.root.clipboard_append(save_path)
+                self.root.update()
+                
+                if messagebox.askyesno("구글 캘린더 등록", 
+                                      f"{len(extracted_events)}개의 일정이 생성되었습니다.\n\n파일 경로가 클립보드에 복사되었습니다!\n\n지금 구글 캘린더 '가져오기' 페이지를 열까요?"):
+                    webbrowser.open("https://calendar.google.com/calendar/u/0/r/settings/export")
+                    os.startfile(os.path.dirname(os.path.abspath(save_path)))
+
+        btn_frame = ctk.CTkFrame(preview_win, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=20)
+        ctk.CTkButton(btn_frame, text="취소", command=preview_win.destroy, fg_color="gray").pack(side="left", padx=50)
+        ctk.CTkButton(btn_frame, text="ICS 파일로 저장", command=proceed_save).pack(side="right", padx=50)
+
+    def show_preview(self, filename: str, content: str) -> str:
+        # Modal preview
+        preview_win = ctk.CTkToplevel(self.root)
+        preview_win.title("최종 검토")
+        preview_win.geometry("800x700")
+        
+        # 팝업 가림 방지
+        preview_win.attributes("-topmost", True)
+        preview_win.after(100, lambda: preview_win.attributes("-topmost", False))
+        preview_win.lift()
+        preview_win.focus_force()
+        preview_win.grab_set()
+        
+        
+        ctk.CTkLabel(preview_win, text=f"🔍 {filename} 분석 전 검토", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+        editor = ctk.CTkTextbox(preview_win, width=750, height=550)
+        editor.pack(padx=20, pady=10)
+        editor.insert("0.0", content)
+        
+        res = {"content": None}
+        def submit():
+            res["content"] = editor.get("0.0", tk.END).strip()
+            preview_win.destroy()
+        
+        def cancel():
+            preview_win.destroy()
+            
+        btn_frame = ctk.CTkFrame(preview_win, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=20)
+        ctk.CTkButton(btn_frame, text="취소", command=cancel, width=100, fg_color="gray").pack(side="left", padx=50)
+        ctk.CTkButton(btn_frame, text="심층 분석 요청", command=submit, width=200).pack(side="right", padx=50)
+        
+        self.root.wait_window(preview_win)
+        return res["content"]
+
+    def set_analysis_progress(self, filename, text_len=0, is_start=True, provider="Gemini 3.0 Flash"):
+        if is_start:
+            self.progress_bar.pack(fill="x", pady=5)
+            self.progress_bar.start() 
+            
+            # 파일명이 너무 길면 생략 처리 (예: "매우긴파일명..." )
+            display_name = filename if len(filename) <= 30 else filename[:27] + "..."
+            
+            # 예상 시간 계산 (공급자별 차등)
+            if "Ollama" in provider:
+                estimated_sec = max(30, int(text_len / 500 * 25))
+            else:
+                estimated_sec = 10
+            
+            min_val = estimated_sec // 60
+            sec_val = estimated_sec % 60
+            
+            msg = f"⏳ '{display_name}' 분석 중...\n({provider} 사용 중, 예상 소요 시간: "
+            if min_val > 0:
+                msg += f"{min_val}분 "
+            msg += f"{sec_val}초)"
+            
+            # wraplength를 추가하여 텍스트가 잘리지 않게 함
+            self.progress_label.configure(text=msg, justify="left")
+        else:
+            self.progress_bar.stop()
+            self.progress_bar.set(1.0)
+            self.progress_label.configure(text="✅ 분석이 완료되었습니다.")
+            self.root.after(3000, lambda: self.progress_bar.pack_forget())
+            self.root.after(3000, lambda: self.progress_label.configure(text=""))
 
 if __name__ == "__main__":
     gui = AgentGUI()
-    if gui.show_disclaimer():
-        res = gui.show_preview("테스트.hwp", "내용샘플")
-        print(f"Result: {res}")
+    gui.show_window()
+    gui.root.mainloop()

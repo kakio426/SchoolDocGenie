@@ -33,14 +33,22 @@ class GeminiService:
         Answer the following question based ONLY on the provided document content.
         If the answer is not in the document, say "문서에서 관련 내용을 찾을 수 없습니다."
         
+        CRITICAL: Do not use any markdown formatting like asterisks(*) or hashes(#). 
+        Provide the answer in clean plain text.
+
         Document Content:
         {context[:10000]}
         
         Question: {question}
         
-        Answer (in Korean, helpful tone):
+        Answer (in Korean, helpful tone, plain text only):
         """
-        return self.model.generate_content(prompt).text.strip()
+        response_text = self.model.generate_content(prompt).text.strip()
+        # 특수 문자 제거 (마스크 처리된 * 등은 제외하고 형식상 들어가는 기호 위주)
+        import re
+        # **볼드** 나 # 제목 등을 제거하기 위해 re.sub 사용
+        clean_text = re.sub(r'[*#]', '', response_text)
+        return clean_text
 
     def compare_documents(self, text_a: str, text_b: str) -> str:
         """두 문서의 차이점 분석 (작년 vs 올해 등)"""

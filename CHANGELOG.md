@@ -1,3 +1,17 @@
+## [v0.7.0] - 2025-12-31 "The Power Up Update"
+### Added
+- **Local AI support (Ollama)**: Integrated Ollama for local document analysis with automatic `exaone3.5:2.4b` model sanitization.
+- **Gemini 3.0 Flash Integration**: Fully stabilized Gemini 3.0 Flash engine as the primary analysis provider.
+- **Poppler Auto-Detection**: Implemented automatic search for Poppler bin paths to enable PDF OCR without manual configuration.
+- **Smart ICS Export**: Added date-matching logic for schedule extraction and a "One-Click" Google Calendar import workflow (Open URL + Open Folder).
+- **History Deletion**: Added a delete button (X) to the analysis archive to manage and remove past records.
+- **Settings UI Revamp**: Dynamic engine switching with clean layout and API Key management.
+
+### Fixed
+- **Startup UX**: Resolved window flickering by deferring deiconify until UI construction is complete.
+- **Threading Stability**: Applied thread-safe UI updates to prevent "Not Responding" errors during heavy analysis.
+- **Ollama Error Handling**: Added explicit error reporting for missing models and backend connection failures.
+
 ## [0.2.0] - 2025-12-30
 
 ### Added

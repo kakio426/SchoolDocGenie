@@ -124,10 +124,71 @@ class LocalConverterService:
         except Exception as e:
             return f"ODT Error: {str(e)}"
 
+    def convert_ocr(self, file_path: str) -> str:
+        try:
+            import pytesseract
+            from PIL import Image
+            import os
+            
+            # Tesseract-OCR 경로 체크
+            common_tess_paths = [
+                r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                r'C:\Users\\' + os.getlogin() + r'\AppData\Local\Tesseract-OCR\tesseract.exe',
+                r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+            ]
+            tess_found = False
+            for p in common_tess_paths:
+                if os.path.exists(p):
+                    pytesseract.pytesseract.tesseract_cmd = p
+                    tess_found = True
+                    break
+            
+            if not tess_found:
+                return "❌ [오류] Tesseract-OCR이 설치되어 있지 않습니다.\n설치 후 경로를 확인해 주세요."
+
+            ext = os.path.splitext(file_path)[1].lower()
+            
+            if ext == '.pdf':
+                try:
+                    from pdf2image import convert_from_path
+                    
+                    # Poppler 경로 자동 탐색
+                    poppler_bin = None
+                    common_poppler_paths = [
+                        r'C:\Program Files\poppler\Library\bin',
+                        r'C:\poppler\Library\bin',
+                        r'C:\Program Files (x86)\poppler\Library\bin'
+                    ]
+                    for p in common_poppler_paths:
+                        if os.path.exists(os.path.join(p, 'pdftoppm.exe')):
+                            poppler_bin = p
+                            break
+                    
+                    # poppler_path가 발견되면 지정, 아니면 환경변수 신뢰
+                    pages = convert_from_path(file_path, 300, poppler_path=poppler_bin)
+                    
+                    text_parts = []
+                    for i, page in enumerate(pages):
+                        text = pytesseract.image_to_string(page, lang='kor+eng')
+                        text_parts.append(f"--- Page {i+1} ---\n{text}")
+                    return f"# PDF OCR 분석 결과\n\n" + "\n\n".join(text_parts)
+                except Exception as e:
+                    return f"❌ PDF OCR 실패: {str(e)}\n(Poppler 설치 경로를 확인하거나 시스템 환경 변수가 제대로 설정되었는지 확인해 주세요.)"
+            
+            # 일반 이미지 처리
+            text = pytesseract.image_to_string(Image.open(file_path), lang='kor+eng')
+            return f"# OCR 이미지 분석 결과\n\n{text}"
+            
+        except ImportError:
+            return "❌ [오류] pytesseract, pdf2image 및 Pillow 라이브러리가 필요합니다."
+        except Exception as e:
+            return f"OCR 실패: {str(e)}"
+
     def convert_document(self, file_path: str) -> str:
         ext = os.path.splitext(file_path)[1].lower()
         if ext == '.hwp': return self.convert_hwp(file_path)
         elif ext == '.hwpx': return self.convert_hwpx(file_path)
         elif ext == '.odt': return self.convert_odt(file_path)
         elif ext in ['.xlsx', '.xls']: return self.convert_excel(file_path)
-        return f"Unsupported: {ext}"
+        elif ext in ['.png', '.jpg', '.jpeg', '.bmp', '.pdf']: return self.convert_ocr(file_path)
+        return f"지원되지 않는 형식입니다: {ext}"

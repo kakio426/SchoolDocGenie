@@ -41,6 +41,48 @@ class HistoryManager:
         with open(self.history_path, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=4)
 
+    def add_chat_message(self, timestamp: str, filename: str, query: str, answer: str):
+        """특정 기록에 채팅 내역 추가"""
+        try:
+            with open(self.history_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+            
+            # 파일명과 시간으로 해당 기록 찾기
+            for record in history:
+                if record.get("filename") == filename and record.get("timestamp") == timestamp:
+                    if "chat_history" not in record:
+                        record["chat_history"] = []
+                    record["chat_history"].append({
+                        "query": query,
+                        "answer": answer,
+                        "time": datetime.now().strftime("%H:%M:%S")
+                    })
+                    break
+            
+            with open(self.history_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"채팅 저장 오류: {e}")
+
+    def delete_record(self, timestamp: str, filename: str) -> bool:
+        """분석 기록 삭제"""
+        try:
+            with open(self.history_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+            
+            original_len = len(history)
+            # 타임스탬프와 파일명이 모두 일치하는 항목 제외
+            history = [r for r in history if not (r.get("timestamp") == timestamp and r.get("filename") == filename)]
+            
+            if len(history) < original_len:
+                with open(self.history_path, "w", encoding="utf-8") as f:
+                    json.dump(history, f, ensure_ascii=False, indent=4)
+                return True
+            return False
+        except Exception as e:
+            print(f"기록 삭제 오류: {e}")
+            return False
+
     def get_history(self) -> list:
         """전체 기록 반환"""
         if not self.history_path.exists():
